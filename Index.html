@@ -1479,7 +1479,7 @@
       } catch(e) { alert("❌ รูปแบบผิด!"); }
     }
     
-    function renderImportPreview() {
+        function renderImportPreview() {
       const area = document.getElementById('import-preview-area');
       let html = `<table class="w-full text-[10px] text-left"><thead><tr class="bg-slate-100"><th class="p-2">สินค้า</th><th class="p-2 text-center">ทุน/ขาย</th><th class="p-2 text-center">+คลัง</th><th class="p-2 text-right">สถานะ</th></tr></thead><tbody>`;
       let hasFatalError = false;
@@ -1493,36 +1493,76 @@
         html += `<tr class="border-t ${rowColor}"><td class="p-2 font-bold">${item.name || '-'}</td><td class="p-2 text-center font-bold">${item.cost||0}/${item.price||0}</td><td class="p-2 text-center font-black">${item.stock||0}</td><td class="p-2 text-right font-bold">${finalStatus}</td></tr>`;
       });
       html += `</tbody></table>`; area.innerHTML = html; 
+      
       const btn = document.getElementById('btn-confirm-import');
-      if (hasFatalError) { btn.classList.add('hidden'); alert("⚠️ ตรวจพบข้อมูลผิดพลาด โปรดแก้ไขก่อนนำเข้า"); } else { btn.classList.remove('hidden'); }
+      if (btn) {
+        if (pendingImportData.length > 0 && !hasFatalError) {
+          btn.classList.remove('hidden');
+        } else {
+          btn.classList.add('hidden');
+        }
+      }
     }
-    
+
     function confirmImportData() {
-      if(!confirm("ยืนยันการนำเข้าและอัปเดตข้อมูล?")) return;
-      document.getElementById('loading-overlay').classList.remove('hidden');
-      setTimeout(() => {
-        pendingImportData.forEach(item => {
-           const existingProduct = Object.values(db.products).find(p => (item.barcode && p.barcode === item.barcode) || p.name === item.name);
-           if (existingProduct) { existingProduct.cost = item.cost; existingProduct.price = item.price; existingProduct.stock += item.stock; if(item.cat) existingProduct.cat = item.cat; if(item.barcode) existingProduct.barcode = item.barcode; queueSync('PRODUCT_SAVE', existingProduct); } 
-           else { const pid = `P-${myDeviceId}-${Date.now().toString().slice(-4)}-${db.counters.product}`; db.products[pid] = { id: pid, name: item.name, cost: item.cost, price: item.price, stock: item.stock, cat: item.cat, barcode: item.barcode || db.counters.barcode.toString(), variants: [], isDeleted: false }; db.counters.product++; if(!item.barcode) db.counters.barcode++; queueSync('PRODUCT_SAVE', db.products[pid]); }
-        });
-        persist(); renderStock(); closeModal('modal-command'); document.getElementById('loading-overlay').classList.add('hidden'); alert("✅ สำเร็จ!");
-      }, 500); 
+      pendingImportData.forEach(item => {
+        if (item.err) return;
+        const existingProduct = Object.values(db.products).find(p => (item.barcode && p.barcode === item.barcode) || p.name === item.name);
+        
+        if (existingProduct) {
+          existingProduct.stock += item.stock;
+          existingProduct.cost = item.cost;
+          existingProduct.price = item.price;
+          queueSync('PRODUCT_SAVE', existingProduct);
+        } else {
+          const pid = `P-${myDeviceId}-${Date.now().toString().slice(-4)}-${db.counters.product}`;
+          db.products[pid] = {
+            id: pid, name: item.name, barcode: item.barcode || pid,
+            cost: item.cost, price: item.price, stock: item.stock,
+            cat: item.cat, variants: [], isDeleted: false
+          };
+          db.counters.product++;
+          queueSync('PRODUCT_SAVE', db.products[pid]);
+        }
+      });
+      persist(); renderStock(); closeModal('modal-command');
+      pendingImportData = []; alert("✅ นำเข้าข้อมูลสำเร็จ!");
     }
-    
-    function openQuickCommandModal() { document.getElementById('modal-command').classList.remove('hidden'); }
-    
+
+    function openQuickCommandModal() {
+      if(!checkManagerAccess()) return;
+      document.getElementById('command-input').value = "";
+      document.getElementById('import-preview-area').innerHTML = "";
+      const btn = document.getElementById('btn-confirm-import');
+      if(btn) btn.classList.add('hidden');
+      document.getElementById('modal-command').classList.remove('hidden');
+    }
+
+    // ฟังก์ชันกล้องสแกนบาร์โค้ด
     function startCameraScan() {
-      if (!db.currentShift) return alert("❌ เปิดกะการขายก่อนเพื่อสแกนสินค้าลงตะกร้า!");
+      if(!db.currentShift) return alert("❌ เปิดกะการขายก่อนสแกนสินค้า!");
       document.getElementById('modal-camera').classList.remove('hidden');
       isCameraActive = true;
-      if(!scanner) scanner = new Html5Qrcode("reader");
-      scanner.start({ facingMode: "environment" }, { fps: 15, qrbox: 280 }, (text) => { processScannerText(text); stopCameraScan(); }).catch(err => { alert("❌ ไม่สามารถเปิดกล้องได้"); stopCameraScan(); });
+      scanner = new Html5Qrcode("reader");
+      scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 150 } },
+        (decodedText) => {
+          processScannerText(decodedText);
+          stopCameraScan();
+        },
+        (errorMessage) => { // Error handling can be silent }
+      ).catch(err => {
+        alert("ไม่สามารถเปิดกล้องได้: " + err);
+        stopCameraScan();
+      });
     }
-    
-    function stopCameraScan() { 
-      if(scanner && isCameraActive) { scanner.stop().then(() => { isCameraActive = false; document.getElementById('modal-camera').classList.add('hidden'); }).catch(()=>{ document.getElementById('modal-camera').classList.add('hidden'); }); } 
-      else { document.getElementById('modal-camera').classList.add('hidden'); } 
+
+    function stopCameraScan() {
+      document.getElementById('modal-camera').classList.add('hidden');
+      if (scanner && isCameraActive) {
+        scanner.stop().then(() => { isCameraActive = false; }).catch(err => console.error(err));
+      }
     }
   </script>
 </body>
